@@ -5,6 +5,7 @@ import torch.optim as optim
 from torch.utils.data import DataLoader
 from fashionmnist import FashionMNIST
 from torchvision import datasets
+from tqdm import tqdm
 import model
 import utils
 import time
@@ -20,7 +21,13 @@ parser.add_argument("--nocuda", action='store_true', help="no cuda used")
 parser.add_argument("--nworkers", type=int, default=4, help="number of workers")
 parser.add_argument("--seed", type=int, default=1, help="random seed")
 parser.add_argument("--data", type=str, default='fashion', help="mnist or fashion")
+parser.add_argument("--notqdm", action='store_true', help="turn off progress bar")
 args = parser.parse_args()
+
+def silent_tqdm(iterable, **kwargs):
+    return iterable
+if args.notqdm:
+    tqdm = silent_tqdm
 
 cuda = not args.nocuda and torch.cuda.is_available() # use cuda
 print('Training on cuda: {}'.format(cuda))
@@ -49,10 +56,6 @@ while os.path.exists(current_dir):
 os.mkdir(current_dir)
 logfile = open('{}/log.txt'.format(current_dir), 'w')
 print(args, file=logfile)
-
-# Tensorboard viz. tensorboard --logdir {yourlogdir}. Requires tensorflow.
-from tensorboard_logger import configure, log_value
-configure(current_dir, flush_secs=5)
 
 # Define transforms.
 # normalize = transforms.Normalize((0.1307,), (0.3081,)
@@ -92,7 +95,12 @@ def train(net, loader, criterion, optimizer):
     running_loss = 0
     running_accuracy = 0
 
-    for i, (X,y) in enumerate(loader):
+    size = loader.dataset.train_data.shape[0]
+    batch_size = loader.batch_size
+    num_batches = size // batch_size
+    num_batches = num_batches if loader.drop_last else num_batches + 1
+
+    for i, (X,y) in tqdm(enumerate(loader), desc='train', total=num_batches):
         if cuda:
             X, y = X.cuda(), y.cuda()
         X, y = Variable(X), Variable(y)
@@ -105,13 +113,20 @@ def train(net, loader, criterion, optimizer):
         running_loss += loss.data[0]
         pred = output.data.max(1, keepdim=True)[1] # get the index of the max log-probability
         running_accuracy += pred.eq(y.data.view_as(pred)).cpu().sum()
+        break
     return running_loss/len(loader), running_accuracy/len(loader.dataset)
 
 def validate(net, loader, criterion):
     net.eval()
     running_loss = 0
     running_accuracy = 0
-    for i, (X,y) in enumerate(loader):
+
+    size = loader.dataset.test_data.shape[0]
+    batch_size = loader.batch_size
+    num_batches = size // batch_size
+    num_batches = num_batches if loader.drop_last else num_batches + 1
+
+    for i, (X,y) in tqdm(enumerate(loader), desc='validation', total=num_batches):
         if cuda:
             X, y = X.cuda(), y.cuda()
         X, y = Variable(X, volatile=True), Variable(y)
@@ -148,16 +163,10 @@ if __name__ == '__main__':
         end = time.time()
 
         # print stats
-        stats ="""Epoch: {}\t train loss: {:.3f}, train acc: {:.3f}\t
-                val loss: {:.3f}, val acc: {:.3f}\t
-                time: {:.1f}s""".format( e, train_loss, train_acc, val_loss,
-                val_acc, end-start)
+        stats = "epoch={} tr-loss={:.3f} tr-acc={:.3f} val-loss={:.3f} val-acc={:.3f} time={:.1f}s".format(
+            e, train_loss, train_acc, val_loss, val_acc, end-start)
         print(stats)
         print(stats, file=logfile)
-        log_value('train_loss', train_loss, e)
-        log_value('val_loss', val_loss, e)
-        log_value('train_acc', train_acc, e)
-        log_value('val_acc', val_acc, e)
 
         #early stopping and save best model
         if val_loss < best_loss:
